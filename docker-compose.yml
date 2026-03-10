@@ -1,0 +1,8 @@
+services:
+  solax-exporter:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    env_file:
+      - .env
