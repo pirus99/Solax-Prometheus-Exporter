@@ -9,7 +9,8 @@ It supports **1–200 inverter instances** in a single process, each identified 
 
 - Polls every inverter via `POST optType=ReadRealTimeData&pwd=<SERIAL>` (the same request as the Solax local API).
 - Exports real-time metrics: grid voltage/current/power/frequency, PV string data, energy totals, inverter status, and temperature.
-- Optional **smart-meter metrics** (feed-in power, load power, import/export energy totals).
+- Optional **smart-meter metrics** (feed-in power, load power, import/export energy totals) — configurable **globally** or **per inverter**.
+- **Offline-resilient**: if an inverter is unreachable the exporter never crashes; `solax_inverter_status` is set to `-1` and, after a configurable number of consecutive failures, all real-time readings are zeroed (accumulated kWh totals are always preserved).
 - All **Data\[\] index assignments are in one place** in `exporter.py` — easy to remap if your model differs.
 - Configurable entirely via a `.env` file.
 - Docker-ready (`Dockerfile` + `docker-compose.yml` included).
@@ -61,10 +62,12 @@ docker compose up -d
 | `INVERTER_N_NAME` | `inverter_N` | Prometheus label for inverter N |
 | `INVERTER_N_ENDPOINT` | *(required)* | Full HTTP URL, e.g. `http://192.168.1.100` |
 | `INVERTER_N_SERIAL` | *(required)* | Inverter serial number (also the API password) |
+| `INVERTER_N_SMART_METER` | *(global default)* | Enable smart-meter readings for inverter N only. Overrides `ENABLE_SMART_METER` for that inverter. |
 | `EXPORTER_PORT` | `9101` | TCP port Prometheus scrapes (9101 avoids clashing with Prometheus itself on 9090) |
 | `SCRAPE_INTERVAL` | `30` | Poll interval in seconds |
 | `REQUEST_TIMEOUT` | `10` | Per-request HTTP timeout in seconds |
-| `ENABLE_SMART_METER` | `false` | Export smart-meter metrics (see below) |
+| `OFFLINE_FAILURE_THRESHOLD` | `5` | Consecutive failed polls before real-time readings are zeroed (kWh totals are always preserved) |
+| `ENABLE_SMART_METER` | `false` | Global default for smart-meter metrics (can be overridden per inverter with `INVERTER_N_SMART_METER`) |
 
 **Multiple inverters** — set `INVERTER_COUNT=2` and add `INVERTER_2_NAME`, `INVERTER_2_ENDPOINT`, `INVERTER_2_SERIAL` (and so on up to 200).
 
@@ -93,9 +96,9 @@ All metrics carry an `inverter` label with the value of `INVERTER_N_NAME`.
 | `solax_inverter_status` | — | 10 | × 1 |
 | `solax_inverter_temperature_celsius` | °C | 38 | × 1 |
 
-Status codes: `0` = Waiting, `1` = Checking, `2` = Normal, `3` = Fault, `4` = Permanent Fault.
+Status codes: `-1` = Offline/Unreachable, `0` = Waiting, `1` = Checking, `2` = Normal, `3` = Fault, `4` = Permanent Fault.
 
-### Smart-meter metrics (`ENABLE_SMART_METER=true`)
+### Smart-meter metrics (`ENABLE_SMART_METER=true` or `INVERTER_N_SMART_METER=true`)
 
 | Metric | Unit | Data\[\] index | Scale | Notes |
 |---|---|---|---|---|
@@ -107,6 +110,27 @@ Status codes: `0` = Waiting, `1` = Checking, `2` = Normal, `3` = Fault, `4` = Pe
 > **Note:** Smart-meter indices are based on the Solax X1 Air Mini (API type 4).  
 > If the values look wrong for your model, adjust the `"index"` values in the  
 > `SMART_METER_FIELDS` dictionary at the top of `exporter.py`.
+
+---
+
+## Offline / error handling
+
+When an inverter is unreachable (evening shutdown, network issue, etc.) the
+exporter **never crashes** — it keeps polling every `SCRAPE_INTERVAL` seconds.
+
+| Consecutive failures | Behaviour |
+|---|---|
+| 1 | `solax_inverter_status` set to **-1** (Offline/Unreachable) |
+| 2 – (`OFFLINE_FAILURE_THRESHOLD` − 1) | Status stays **-1**, all other metrics keep their last live value |
+| ≥ `OFFLINE_FAILURE_THRESHOLD` (default 5) | Status stays **-1**, all **real-time** readings set to **0** |
+| Recovery (next successful poll) | Failure counter resets; all metrics return to live values |
+
+**What is preserved even at 5+ failures:**  
+`solax_total_energy_kwh`, `solax_daily_energy_kwh`, `solax_total_feed_energy_kwh`,
+`solax_total_import_energy_kwh` — these are accumulated totals that remain valid
+even when the inverter is offline.
+
+**Tune the threshold** with `OFFLINE_FAILURE_THRESHOLD` in your `.env`.
 
 ---
 

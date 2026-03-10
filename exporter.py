@@ -51,6 +51,8 @@ SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "30"))
 INVERTER_COUNT = max(1, min(200, int(os.getenv("INVERTER_COUNT", "1"))))
 ENABLE_SMART_METER = os.getenv("ENABLE_SMART_METER", "false").lower() == "true"
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "10"))
+# Number of consecutive unreachable polls before real-time readings are zeroed.
+OFFLINE_FAILURE_THRESHOLD = int(os.getenv("OFFLINE_FAILURE_THRESHOLD", "5"))
 
 # ---------------------------------------------------------------------------
 # DATA FIELD MAPPINGS
@@ -73,6 +75,10 @@ REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "10"))
 #   signed      – (optional) True when the value can be negative.
 #                 Negative numbers are stored as unsigned 16-bit two's
 #                 complement (i.e. value > 32767 → value − 65536).
+#   persist_offline – (optional) True for accumulated totals (kWh) that must
+#                 NOT be zeroed when the inverter has been unreachable for
+#                 OFFLINE_FAILURE_THRESHOLD consecutive polls.  All other
+#                 fields are zeroed to indicate "no live data".
 # ---------------------------------------------------------------------------
 
 GRID_FIELDS: dict = {
@@ -147,12 +153,14 @@ ENERGY_FIELDS: dict = {
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Lifetime Energy Generated",
+        "persist_offline": True,
     },
     "solax_daily_energy_kwh": {
         "index": 13,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Daily Energy Generated",
+        "persist_offline": True,
     },
 }
 
@@ -163,7 +171,8 @@ INVERTER_FIELDS: dict = {
         "unit": "",
         "description": (
             "Inverter Status Code "
-            "(0=Waiting, 1=Checking, 2=Normal, 3=Fault, 4=Permanent Fault)"
+            "(-1=Offline/Unreachable, 0=Waiting, 1=Checking, 2=Normal, "
+            "3=Fault, 4=Permanent Fault)"
         ),
     },
     "solax_inverter_temperature_celsius": {
@@ -204,12 +213,14 @@ SMART_METER_FIELDS: dict = {
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Exported to Grid (lifetime)",
+        "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
         "index": 51,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
+        "persist_offline": True,
     },
 }
 
@@ -236,15 +247,22 @@ def load_inverter_config() -> list:
     Build the list of inverter configurations from environment variables.
 
     Expected variables (N is 1-based, up to INVERTER_COUNT):
-        INVERTER_N_NAME     – Prometheus label value (default: inverter_N)
-        INVERTER_N_ENDPOINT – Full HTTP URL of the inverter (required)
-        INVERTER_N_SERIAL   – Serial number used as API password (required)
+        INVERTER_N_NAME         – Prometheus label value (default: inverter_N)
+        INVERTER_N_ENDPOINT     – Full HTTP URL of the inverter (required)
+        INVERTER_N_SERIAL       – Serial number used as API password (required)
+        INVERTER_N_SMART_METER  – Enable smart-meter readings for this inverter
+                                  (default: value of global ENABLE_SMART_METER)
     """
     inverters = []
     for i in range(1, INVERTER_COUNT + 1):
         name = os.getenv(f"INVERTER_{i}_NAME", f"inverter_{i}")
         endpoint = os.getenv(f"INVERTER_{i}_ENDPOINT", "").strip()
         serial = os.getenv(f"INVERTER_{i}_SERIAL", "").strip()
+        smart_meter_default = "true" if ENABLE_SMART_METER else "false"
+        smart_meter = (
+            os.getenv(f"INVERTER_{i}_SMART_METER", smart_meter_default).lower()
+            == "true"
+        )
 
         if not endpoint:
             logger.warning(
@@ -257,18 +275,31 @@ def load_inverter_config() -> list:
             )
             continue
 
-        inverters.append({"name": name, "endpoint": endpoint, "serial": serial})
+        inverters.append(
+            {
+                "name": name,
+                "endpoint": endpoint,
+                "serial": serial,
+                "smart_meter": smart_meter,
+                # Tracks consecutive unreachable polls for this inverter.
+                "consecutive_failures": 0,
+            }
+        )
         logger.info(
-            "Configured inverter %d: name=%s, endpoint=%s", i, name, endpoint
+            "Configured inverter %d: name=%s, endpoint=%s, smart_meter=%s",
+            i,
+            name,
+            endpoint,
+            smart_meter,
         )
 
     return inverters
 
 
-def create_gauges(active_fields: dict) -> dict:
-    """Create one Prometheus Gauge per active field, labelled by inverter name."""
+def create_gauges(fields: dict) -> dict:
+    """Create one Prometheus Gauge per field entry, labelled by inverter name."""
     gauges = {}
-    for metric_name, field in active_fields.items():
+    for metric_name, field in fields.items():
         gauges[metric_name] = Gauge(
             metric_name,
             field["description"],
@@ -299,17 +330,48 @@ def fetch_inverter_data(endpoint: str, serial: str) -> dict | None:
     return None
 
 
-def update_metrics(
-    gauges: dict, inverters: list, active_fields: dict
-) -> None:
+def _active_fields_for(inverter: dict) -> dict:
+    """Return the combined field dict that applies to a single inverter."""
+    fields = dict(STANDARD_FIELDS)
+    if inverter["smart_meter"]:
+        fields.update(SMART_METER_FIELDS)
+    return fields
+
+
+def update_metrics(gauges: dict, inverters: list) -> None:
     """Poll every inverter and push the latest values into the Gauges."""
     for inverter in inverters:
         name = inverter["name"]
         data = fetch_inverter_data(inverter["endpoint"], inverter["serial"])
 
         if data is None:
-            logger.warning("No data received from inverter '%s'", name)
+            inverter["consecutive_failures"] += 1
+            failures = inverter["consecutive_failures"]
+            logger.warning(
+                "No data from inverter '%s' (consecutive failures: %d)",
+                name,
+                failures,
+            )
+            # Always mark the inverter as offline (-1).
+            if "solax_inverter_status" in gauges:
+                gauges["solax_inverter_status"].labels(inverter=name).set(-1)
+
+            # After OFFLINE_FAILURE_THRESHOLD consecutive failures, zero every
+            # real-time reading so stale values are not reported as live data.
+            # kWh accumulators (persist_offline=True) are intentionally kept.
+            if failures >= OFFLINE_FAILURE_THRESHOLD:
+                active = _active_fields_for(inverter)
+                for metric_name, field in active.items():
+                    if metric_name == "solax_inverter_status":
+                        continue  # already set to -1 above
+                    if metric_name not in gauges:
+                        continue
+                    if not field.get("persist_offline"):
+                        gauges[metric_name].labels(inverter=name).set(0)
             continue
+
+        # ── Successful response ────────────────────────────────────────────
+        inverter["consecutive_failures"] = 0
 
         raw_data: list = data.get("Data", [])
         if not raw_data:
@@ -320,7 +382,7 @@ def update_metrics(
             "Received %d data points from inverter '%s'", len(raw_data), name
         )
 
-        for metric_name, field in active_fields.items():
+        for metric_name, field in _active_fields_for(inverter).items():
             idx: int = field["index"]
             if idx >= len(raw_data):
                 logger.debug(
@@ -346,9 +408,10 @@ def update_metrics(
 
 def main() -> None:
     logger.info("Starting Solax Prometheus Exporter")
-    logger.info("  Port           : %d", EXPORTER_PORT)
-    logger.info("  Scrape interval: %d s", SCRAPE_INTERVAL)
-    logger.info("  Smart meter    : %s", ENABLE_SMART_METER)
+    logger.info("  Port              : %d", EXPORTER_PORT)
+    logger.info("  Scrape interval   : %d s", SCRAPE_INTERVAL)
+    logger.info("  Global smart meter: %s", ENABLE_SMART_METER)
+    logger.info("  Offline threshold : %d consecutive failures", OFFLINE_FAILURE_THRESHOLD)
 
     inverters = load_inverter_config()
     if not inverters:
@@ -360,18 +423,19 @@ def main() -> None:
 
     logger.info("Monitoring %d inverter(s)", len(inverters))
 
-    active_fields = dict(STANDARD_FIELDS)
-    if ENABLE_SMART_METER:
-        active_fields.update(SMART_METER_FIELDS)
+    # Create gauges for every field that is needed by at least one inverter.
+    all_fields = dict(STANDARD_FIELDS)
+    if any(inv["smart_meter"] for inv in inverters):
+        all_fields.update(SMART_METER_FIELDS)
 
-    gauges = create_gauges(active_fields)
+    gauges = create_gauges(all_fields)
     start_http_server(EXPORTER_PORT)
     logger.info(
         "Metrics available at http://0.0.0.0:%d/metrics", EXPORTER_PORT
     )
 
     while True:
-        update_metrics(gauges, inverters, active_fields)
+        update_metrics(gauges, inverters)
         time.sleep(SCRAPE_INTERVAL)
 
 
