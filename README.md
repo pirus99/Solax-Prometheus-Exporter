@@ -94,7 +94,7 @@ All metrics carry an `inverter` label with the value of `INVERTER_N_NAME`.
 | `solax_total_energy_kwh` | kWh | 11 | ÷ 10 |
 | `solax_daily_energy_kwh` | kWh | 13 | ÷ 10 |
 | `solax_inverter_status` | — | 10 | × 1 |
-| `solax_inverter_temperature_celsius` | °C | 38 | × 1 |
+| `solax_inverter_temperature_celsius` | °C | 39 | × 1 |
 
 Status codes: `-1` = Offline/Unreachable, `0` = Waiting, `1` = Checking, `2` = Normal, `3` = Fault, `4` = Permanent Fault.
 
@@ -102,10 +102,10 @@ Status codes: `-1` = Offline/Unreachable, `0` = Waiting, `1` = Checking, `2` = N
 
 | Metric | Unit | Data\[\] index | Scale | Notes |
 |---|---|---|---|---|
-| `solax_feedin_power_watts` | W | 40 | × 1 | Positive = export, negative = import |
-| `solax_load_power_watts` | W | 47 | × 1 | House consumption |
-| `solax_total_feed_energy_kwh` | kWh | 49 | ÷ 10 | Lifetime export total |
-| `solax_total_import_energy_kwh` | kWh | 51 | ÷ 10 | Lifetime import total |
+| `solax_feedin_power_watts` | W | 41 | × 1 | Positive = export, negative = import |
+| `solax_load_power_watts` | W | 48 | × 1 | House consumption |
+| `solax_total_feed_energy_kwh` | kWh | 50 | ÷ 10 | Lifetime export total |
+| `solax_total_import_energy_kwh` | kWh | 52 | ÷ 10 | Lifetime import total |
 
 > **Note:** Smart-meter indices are based on the Solax X1 Air Mini (API type 4).  
 > If the values look wrong for your model, adjust the `"index"` values in the  

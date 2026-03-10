@@ -176,7 +176,7 @@ INVERTER_FIELDS: dict = {
         ),
     },
     "solax_inverter_temperature_celsius": {
-        "index": 38,
+        "index": 39,
         "scale": 1.0,
         "unit": "°C",
         "description": "Inverter Temperature",
@@ -191,7 +191,7 @@ SMART_METER_FIELDS: dict = {
     # Feed-in power: positive value = exporting to grid,
     #                negative value = importing from grid.
     "solax_feedin_power_watts": {
-        "index": 40,
+        "index": 41,
         "scale": 1.0,
         "unit": "W",
         "description": (
@@ -202,21 +202,21 @@ SMART_METER_FIELDS: dict = {
     },
     # Instantaneous house consumption power.
     "solax_load_power_watts": {
-        "index": 47,
+        "index": 48,
         "scale": 1.0,
         "unit": "W",
         "description": "House Load / Consumption Power",
     },
     # Cumulative energy totals from smart meter.
     "solax_total_feed_energy_kwh": {
-        "index": 49,
+        "index": 50,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Exported to Grid (lifetime)",
         "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
-        "index": 51,
+        "index": 52,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
