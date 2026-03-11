@@ -68,6 +68,7 @@ docker compose up -d
 | `REQUEST_TIMEOUT` | `10` | Per-request HTTP timeout in seconds |
 | `OFFLINE_FAILURE_THRESHOLD` | `5` | Consecutive failed polls before real-time readings are zeroed (kWh totals are always preserved) |
 | `ENABLE_SMART_METER` | `false` | Global default for smart-meter metrics (can be overridden per inverter with `INVERTER_N_SMART_METER`) |
+| `DEBUG_LOG` | `false` | When `false` (default): a compact **status window** is printed/refreshed each poll cycle instead of per-failure log lines. When `true`: full verbose logging is written (request errors, data-point counts, etc.) and the status window is disabled. Useful for troubleshooting. |
 
 **Multiple inverters** — set `INVERTER_COUNT=2` and add `INVERTER_2_NAME`, `INVERTER_2_ENDPOINT`, `INVERTER_2_SERIAL` (and so on up to 200).
 
@@ -131,6 +132,38 @@ exporter **never crashes** — it keeps polling every `SCRAPE_INTERVAL` seconds.
 even when the inverter is offline.
 
 **Tune the threshold** with `OFFLINE_FAILURE_THRESHOLD` in your `.env`.
+
+---
+
+## Logging / status window
+
+By default (`DEBUG_LOG=false`) the exporter avoids log spam by showing a
+compact **status window** instead of printing a new warning line on every
+failed poll.  The window is refreshed once per `SCRAPE_INTERVAL` and looks
+like this:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  Solax Exporter  ──  2026-03-11 18:00:00                           │
+├──────────────────────┬───────────────────────────┬─────────────────┤
+│  Inverter            │  Status                   │  Last OK        │
+├──────────────────────┼───────────────────────────┼─────────────────┤
+│  inverter_1          │  Online                   │  18:00:00       │
+│  inverter_2          │  Offline (3 failures)     │  17:45:30       │
+└──────────────────────┴───────────────────────────┴─────────────────┘
+```
+
+- On an **interactive terminal (TTY)** the block is redrawn in-place using
+  ANSI cursor control — it behaves like a live dashboard.
+- In **non-TTY environments** (Docker, systemd, pipe) the block is simply
+  appended once per cycle without ANSI codes.  This is still far less noisy
+  than a repeated failure line every 30 s.
+
+State-change events (inverter went offline, came back online) are always
+logged as WARNING / INFO regardless of this setting.
+
+To enable **full verbose logging** and disable the status window, set
+`DEBUG_LOG=true` in your `.env`.
 
 ---
 

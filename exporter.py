@@ -23,8 +23,10 @@ Example response:
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
+import sys
 import time
 
 import requests
@@ -36,8 +38,11 @@ from prometheus_client import Gauge, start_http_server
 # ---------------------------------------------------------------------------
 load_dotenv()
 
+# DEBUG_LOG must be read before basicConfig so the level is set correctly.
+DEBUG_LOG: bool = os.getenv("DEBUG_LOG", "false").lower() == "true"
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if DEBUG_LOG else logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -234,6 +239,79 @@ STANDARD_FIELDS: dict = {
 
 
 # ---------------------------------------------------------------------------
+# Status window (non-debug mode)
+# ---------------------------------------------------------------------------
+
+# Tracks how many lines the last status block occupied so the next render can
+# overwrite them in-place on an interactive terminal.
+_STATUS_LINE_COUNT: int = 0
+
+
+def _is_tty() -> bool:
+    """Return True when stdout is an interactive terminal (not a pipe/file)."""
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def print_status_window(inverters: list) -> None:
+    """Render an in-place status summary for every inverter.
+
+    On an interactive TTY the block is redrawn over itself using ANSI cursor
+    control so the terminal acts like a live status display.  In non-TTY
+    environments (Docker, systemd, pipe) the block is simply written once per
+    poll cycle — each block is clean and self-contained, which is far less
+    noisy than a new warning line for every single failure.
+    """
+    global _STATUS_LINE_COUNT
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # local time for display
+
+    # Build the lines that form the status block.
+    separator = "─" * 68
+    lines: list[str] = [
+        f"┌{separator}┐",
+        f"│  Solax Exporter  ──  {now:<46s}│",
+        f"├{'─'*22}┬{'─'*27}┬{'─'*17}┤",
+        f"│  {'Inverter':<20s}│  {'Status':<25s}│  {'Last OK':<15s}│",
+        f"├{'─'*22}┼{'─'*27}┼{'─'*17}┤",
+    ]
+
+    for inv in inverters:
+        name: str = inv["name"]
+        failures: int = inv.get("consecutive_failures", 0)
+        last_ok: datetime.datetime | None = inv.get("last_success_time")
+        # Show full date when the last success was on a different calendar day
+        # so multi-day outages are immediately obvious.
+        if last_ok is None:
+            last_ok_str = "never"
+        elif last_ok.date() == datetime.date.today():
+            last_ok_str = last_ok.strftime("%H:%M:%S")
+        else:
+            last_ok_str = last_ok.strftime("%m-%d %H:%M")
+
+        if failures == 0:
+            state = "Online"
+        else:
+            plural = "s" if failures != 1 else ""
+            state = f"Offline ({failures} failure{plural})"
+
+        lines.append(
+            f"│  {name:<20s}│  {state:<25s}│  {last_ok_str:<15s}│"
+        )
+
+    lines.append(f"└{'─'*22}┴{'─'*27}┴{'─'*17}┘")
+
+    if _is_tty() and _STATUS_LINE_COUNT > 0:
+        # Move the cursor up to the first line of the previous block and erase
+        # everything from there to the end of the screen.
+        sys.stdout.write(f"\033[{_STATUS_LINE_COUNT}A\033[J")
+
+    output = "\n".join(lines) + "\n"
+    sys.stdout.write(output)
+    sys.stdout.flush()
+    _STATUS_LINE_COUNT = len(lines)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -283,6 +361,8 @@ def load_inverter_config() -> list:
                 "smart_meter": smart_meter,
                 # Tracks consecutive unreachable polls for this inverter.
                 "consecutive_failures": 0,
+                # Timestamp of the last successful data fetch (None = never).
+                "last_success_time": None,
             }
         )
         logger.info(
@@ -313,6 +393,8 @@ def fetch_inverter_data(endpoint: str, serial: str) -> dict | None:
     POST optType=ReadRealTimeData&pwd=<serial> to the inverter endpoint.
 
     Returns the parsed JSON dict on success, or None on any failure.
+    In non-debug mode errors are logged at DEBUG level to avoid spamming the
+    console — the status window shows the offline state instead.
     """
     try:
         response = requests.post(
@@ -324,9 +406,15 @@ def fetch_inverter_data(endpoint: str, serial: str) -> dict | None:
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as exc:
-        logger.error("Request to %s failed: %s", endpoint, exc)
+        if DEBUG_LOG:
+            logger.error("Request to %s failed: %s", endpoint, exc)
+        else:
+            logger.debug("Request to %s failed: %s", endpoint, exc)
     except ValueError as exc:
-        logger.error("JSON decode error from %s: %s", endpoint, exc)
+        if DEBUG_LOG:
+            logger.error("JSON decode error from %s: %s", endpoint, exc)
+        else:
+            logger.debug("JSON decode error from %s: %s", endpoint, exc)
     return None
 
 
@@ -347,11 +435,19 @@ def update_metrics(gauges: dict, inverters: list) -> None:
         if data is None:
             inverter["consecutive_failures"] += 1
             failures = inverter["consecutive_failures"]
-            logger.warning(
-                "No data from inverter '%s' (consecutive failures: %d)",
-                name,
-                failures,
-            )
+
+            if DEBUG_LOG:
+                # Verbose mode: log every failure as before.
+                logger.warning(
+                    "No data from inverter '%s' (consecutive failures: %d)",
+                    name,
+                    failures,
+                )
+            elif failures == 1:
+                # Non-debug mode: log the transition to offline exactly once;
+                # subsequent failures are silent (shown via status window only).
+                logger.warning("Inverter '%s' is offline.", name)
+
             # Always mark the inverter as offline (-1).
             if "solax_inverter_status" in gauges:
                 gauges["solax_inverter_status"].labels(inverter=name).set(-1)
@@ -371,7 +467,12 @@ def update_metrics(gauges: dict, inverters: list) -> None:
             continue
 
         # ── Successful response ────────────────────────────────────────────
+        was_offline = inverter["consecutive_failures"] > 0
         inverter["consecutive_failures"] = 0
+        inverter["last_success_time"] = datetime.datetime.now()  # local time for display
+
+        if was_offline:
+            logger.info("Inverter '%s' came back online.", name)
 
         raw_data: list = data.get("Data", [])
         if not raw_data:
@@ -401,6 +502,10 @@ def update_metrics(gauges: dict, inverters: list) -> None:
                 raw_value * field["scale"]
             )
 
+    # In non-debug mode refresh the status window after every full poll cycle.
+    if not DEBUG_LOG:
+        print_status_window(inverters)
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -412,6 +517,7 @@ def main() -> None:
     logger.info("  Scrape interval   : %d s", SCRAPE_INTERVAL)
     logger.info("  Global smart meter: %s", ENABLE_SMART_METER)
     logger.info("  Offline threshold : %d consecutive failures", OFFLINE_FAILURE_THRESHOLD)
+    logger.info("  Debug log         : %s", DEBUG_LOG)
 
     inverters = load_inverter_config()
     if not inverters:
