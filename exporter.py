@@ -228,7 +228,7 @@ SMART_METER_FIELDS: dict = {
         "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
-        "index": 41,
+        "index": 52,
         "scale": 0.01,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
