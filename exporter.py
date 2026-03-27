@@ -197,14 +197,14 @@ SMART_METER_FIELDS: dict = {
     # Feed-in power: positive value = exporting to grid,
     #                negative value = importing from grid.
     "solax_feedin_power_watts_1": {
-        "index": 49,
+        "index": 48,
         "scale": 1.0,
         "unit": "W",
         "persist_offline": True,
         "description": "Smart-meter feed-in power (channel 1)",
     },
     "solax_feedin_power_watts_2": {
-        "index": 50,
+        "index": 49,
         "scale": 1.0,
         "unit": "W",
         "persist_offline": True,
@@ -221,14 +221,14 @@ SMART_METER_FIELDS: dict = {
     },
     # Cumulative energy totals from smart meter.
     "solax_total_feed_energy_kwh": {
-        "index": 52,
+        "index": 51,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Exported to Grid (lifetime)",
         "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
-        "index": 43,
+        "index": 42,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
