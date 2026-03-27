@@ -221,14 +221,14 @@ SMART_METER_FIELDS: dict = {
     },
     # Cumulative energy totals from smart meter.
     "solax_total_feed_energy_kwh": {
-        "index": 51,
+        "index": 50,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Exported to Grid (lifetime)",
         "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
-        "index": 42,
+        "index": 41,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
