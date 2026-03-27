@@ -192,11 +192,25 @@ INVERTER_FIELDS: dict = {
 # These indices are based on Solax X1 Air Mini with an attached smart meter
 # and may differ on other models.  Adjust "index" and/or "scale" as needed
 # once you verify the readings against your own inverter data.
+# House Load / Consumption Power = field 49 - field 50 = positive = feed-in, negative = load
 SMART_METER_FIELDS: dict = {
     # Feed-in power: positive value = exporting to grid,
     #                negative value = importing from grid.
+    "solax_feedin_power_watts_1": {
+        "index": 49,
+        "scale": 1.0,
+        "unit": "W",
+        "persist_offline": True,
+        "description": "Smart-meter feed-in power (channel 1)",
+    },
+    "solax_feedin_power_watts_2": {
+        "index": 50,
+        "scale": 1.0,
+        "unit": "W",
+        "persist_offline": True,
+        "description": "Smart-meter feed-in power (channel 2)",
+    },
     "solax_feedin_power_watts": {
-        "index": 41,
         "scale": 1.0,
         "unit": "W",
         "description": (
@@ -205,23 +219,16 @@ SMART_METER_FIELDS: dict = {
         ),
         "signed": True,
     },
-    # Instantaneous house consumption power.
-    "solax_load_power_watts": {
-        "index": 48,
-        "scale": 1.0,
-        "unit": "W",
-        "description": "House Load / Consumption Power",
-    },
     # Cumulative energy totals from smart meter.
     "solax_total_feed_energy_kwh": {
-        "index": 50,
+        "index": 52,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Exported to Grid (lifetime)",
         "persist_offline": True,
     },
     "solax_total_import_energy_kwh": {
-        "index": 52,
+        "index": 43,
         "scale": 0.1,
         "unit": "kWh",
         "description": "Total Energy Imported from Grid (lifetime)",
@@ -484,6 +491,10 @@ def update_metrics(gauges: dict, inverters: list) -> None:
         )
 
         for metric_name, field in _active_fields_for(inverter).items():
+            # Skip computed/derived metrics that don't have a direct index.
+            if "index" not in field:
+                continue
+
             idx: int = field["index"]
             if idx >= len(raw_data):
                 logger.debug(
@@ -501,6 +512,23 @@ def update_metrics(gauges: dict, inverters: list) -> None:
             gauges[metric_name].labels(inverter=name).set(
                 raw_value * field["scale"]
             )
+
+        # Compute derived smart-meter feed-in power if applicable.
+        # Feed-in = channel_1 (field 49) - channel_2 (field 50).
+        if inverter.get("smart_meter") and "solax_feedin_power_watts" in gauges:
+            idx1 = SMART_METER_FIELDS.get("solax_feedin_power_watts_1", {}).get("index")
+            idx2 = SMART_METER_FIELDS.get("solax_feedin_power_watts_2", {}).get("index")
+            if idx1 is not None and idx2 is not None and idx1 < len(raw_data) and idx2 < len(raw_data):
+                raw1 = to_signed16(raw_data[idx1])
+                raw2 = to_signed16(raw_data[idx2])
+                diff = raw1 - raw2
+                scale = SMART_METER_FIELDS["solax_feedin_power_watts"]["scale"]
+                gauges["solax_feedin_power_watts"].labels(inverter=name).set(diff * scale)
+            else:
+                logger.debug(
+                    "Not enough smart meter data to compute feed-in for '%s'",
+                    name,
+                )
 
     # In non-debug mode refresh the status window after every full poll cycle.
     if not DEBUG_LOG:
