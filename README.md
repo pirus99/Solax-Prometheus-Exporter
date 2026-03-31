@@ -103,14 +103,16 @@ Status codes: `-1` = Offline/Unreachable, `0` = Waiting, `1` = Checking, `2` = N
 
 | Metric | Unit | Data\[\] index | Scale | Notes |
 |---|---|---|---|---|
-| `solax_feedin_power_watts` | W | 41 | × 1 | Positive = export, negative = import |
-| `solax_load_power_watts` | W | 48 | × 1 | House consumption |
+| `solax_feedin_power_watts_1` | W | 48 | ÷ 10 | Number for Export Energy |
+| `solax_feedin_power_watts_2` | W | 49 | ÷ 10 | Number for Import Energy |
+| `solax_feedin_power_watts` | W | calc | ÷ 10 | Positive = export, negative = import |
 | `solax_total_feed_energy_kwh` | kWh | 50 | ÷ 10 | Lifetime export total |
 | `solax_total_import_energy_kwh` | kWh | 52 | ÷ 10 | Lifetime import total |
 
 > **Note:** Smart-meter indices are based on the Solax X1 Air Mini (API type 4).  
 > If the values look wrong for your model, adjust the `"index"` values in the  
 > `SMART_METER_FIELDS` dictionary at the top of `exporter.py`.
+> For my Smart meter i needed to Calculate the feedin_power_watts Value by substracting the Field 49 from Field 48
 
 ---
 
